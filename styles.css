@@ -286,6 +286,13 @@ section > h2 {
   letter-spacing: -0.01em;
 }
 
+.practice-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+  font-size: 0.96rem;
+}
+
 .question-meta {
   display: flex;
   flex-wrap: wrap;

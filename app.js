@@ -10,9 +10,7 @@
   function findFirstMismatchTokenIndex(expectedTokens, inputTokens) {
     const maxLength = Math.max(expectedTokens.length, inputTokens.length)
     for (let index = 0; index < maxLength; index += 1) {
-      if ((expectedTokens[index] ?? "") !== (inputTokens[index] ?? "")) {
-        return index
-      }
+      if ((expectedTokens[index] ?? "") !== (inputTokens[index] ?? "")) return index
     }
     return -1
   }
@@ -51,10 +49,8 @@
     })
   }
 
-  function filterReviewItems(items, options = {}) {
-    const reviewMode = options.reviewMode ?? "all"
-    const mistakes = Array.isArray(options.mistakes) ? options.mistakes : []
-    const mistakeSet = new Set(mistakes)
+  function filterByMistakes(items, reviewMode, mistakes) {
+    const mistakeSet = new Set(Array.isArray(mistakes) ? mistakes : [])
     return (Array.isArray(items) ? items : []).filter((item) => {
       return reviewMode !== "mistakes" || mistakeSet.has(item.id)
     })
@@ -92,12 +88,12 @@
   }
 
   function buildChoiceOptions(items, currentItem) {
-    const currentAnswer = String(currentItem?.answer ?? "")
-    const seen = new Set()
     const options = []
+    const seen = new Set()
+    const currentAnswer = String(currentItem?.answer ?? "")
     if (currentAnswer) {
-      seen.add(normalizeAnswer(currentAnswer))
       options.push(currentAnswer)
+      seen.add(normalizeAnswer(currentAnswer))
     }
     for (const item of Array.isArray(items) ? items : []) {
       const answer = String(item?.answer ?? "")
@@ -203,12 +199,7 @@
     }
   }
 
-  const app = {
-    ready: false,
-    timer: null,
-    state: defaultState(),
-    el: null,
-  }
+  const app = { ready: false, timer: null, state: defaultState(), el: null }
 
   function vocab() {
     return Array.isArray(root.VOCAB_DATA) ? root.VOCAB_DATA : []
@@ -339,6 +330,10 @@
     return CATEGORY_LABELS[category] ?? category
   }
 
+  function reviewModeDisplayLabel(mode) {
+    return mode === "mistakes" ? "错题" : "全部"
+  }
+
   function formatMs(ms) {
     return ms <= 0 ? "0.0s" : `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`
   }
@@ -363,14 +358,7 @@
   }
 
   function currentSynonymList() {
-    return filterReviewItems(synonyms(), {
-      reviewMode: app.state.synonymReviewMode,
-      mistakes: app.state.synonymMistakes,
-    })
-  }
-
-  function currentList() {
-    return app.state.practiceModule === "synonym" ? currentSynonymList() : currentWordList()
+    return filterByMistakes(synonyms(), app.state.synonymReviewMode, app.state.synonymMistakes)
   }
 
   function currentWordQuestion() {
@@ -407,23 +395,10 @@
     const list = currentWordList()
     if (!list.length) return []
     const out = []
-    for (let i = 0; i < QUIZ_SIZE; i += 1) {
-      out.push(list[(startCursor + i) % list.length])
+    for (let index = 0; index < QUIZ_SIZE; index += 1) {
+      out.push(list[(startCursor + index) % list.length])
     }
     return out
-  }
-
-  function modeDisplayLabel() {
-    if (app.state.practiceModule === "synonym") return "同义替换"
-    return app.state.mode === "quiz" ? "小测模式" : "逐词练习"
-  }
-
-  function reviewModeDisplayLabel(mode) {
-    return mode === "mistakes" ? "错题" : "全部"
-  }
-
-  function moduleDisplayLabel(moduleKey) {
-    return moduleKey === "synonym" ? "同义替换" : "单词练习"
   }
 
   function resetTransientState() {
@@ -444,7 +419,7 @@
     app.state.quizRound = []
     const list = currentWordList()
     app.state.deckCursor = !list.length || resetCursor ? 0 : clampCursor(app.state.deckCursor, list.length)
-    app.state.revealState = getActiveRevealState(currentQuestion(), savedRevealState)
+    app.state.revealState = getActiveRevealState(currentWordQuestion(), savedRevealState)
     if (app.state.revealState) {
       app.state.feedback = { type: "reveal", expected: app.state.revealState.answer }
     }
@@ -467,7 +442,7 @@
       app.state.deckCursor = resetCursor ? 0 : clampCursor(app.state.deckCursor, list.length)
       app.state.roundQuestions = makeWordRoundQuestions(app.state.deckCursor)
     }
-    app.state.revealState = getActiveRevealState(currentQuestion(), savedRevealState)
+    app.state.revealState = getActiveRevealState(currentWordQuestion(), savedRevealState)
     if (app.state.revealState) {
       app.state.feedback = { type: "reveal", expected: app.state.revealState.answer }
     }
@@ -478,23 +453,20 @@
   function startSynonym(resetCursor, preserveRevealState = false) {
     const savedRevealState = preserveRevealState ? app.state.revealState : null
     resetTransientState()
-    app.state.roundComplete = false
-    app.state.roundQuestions = []
-    app.state.roundIndex = 0
-    app.state.quizRound = []
     const list = currentSynonymList()
     app.state.synonymDeckCursor = !list.length || resetCursor ? 0 : clampCursor(app.state.synonymDeckCursor, list.length)
-    const canRestoreReveal = currentSynonymQuestionType() === "input"
-    app.state.revealState = canRestoreReveal ? getActiveRevealState(currentQuestion(), savedRevealState) : null
-    if (app.state.revealState) {
-      app.state.feedback = { type: "reveal", expected: app.state.revealState.answer }
+    if (currentSynonymQuestionType() === "input") {
+      app.state.revealState = getActiveRevealState(currentSynonymQuestion(), savedRevealState)
+      if (app.state.revealState) {
+        app.state.feedback = { type: "reveal", expected: app.state.revealState.answer, chinese: currentSynonymQuestion()?.chinese }
+      }
     }
     saveState()
     render()
   }
 
   function restartFromControls(preserveRevealState = false) {
-    const validScenes = new Set(sceneOptions().map((scene) => scene.value))
+    const validScenes = new Set(sceneOptions().map((item) => item.value))
     if (!validScenes.has(app.state.scene)) app.state.scene = "all"
     if (app.state.practiceModule === "synonym") {
       startSynonym(true, preserveRevealState)
@@ -515,24 +487,19 @@
       return `<div class="feedback neutral"><p class="feedback-title">本轮完成</p><p class="feedback-body">${esc(feedback.message)}</p></div>`
     }
     if (feedback.type === "reveal") {
-      return `<div class="feedback warning"><p class="feedback-title">已显示答案</p><p class="feedback-body">标准答案：${esc(feedback.expected)}。请你再自己输入一遍，答对后才能进入下一题。</p></div>`
+      return `<div class="feedback warning"><p class="feedback-title">已显示答案</p><p class="feedback-body">标准答案：${esc(feedback.expected)}${feedback.chinese ? `；中文解释：${esc(feedback.chinese)}` : ""}。请你再自己输入一遍，答对后才能进入下一题。</p></div>`
     }
     if (feedback.type === "retype") {
       return `<div class="feedback warning"><p class="feedback-title">需要重输</p><p class="feedback-body">${esc(feedback.message)}</p></div>`
     }
     const className = feedback.isCorrect ? "success" : "danger"
     const title = feedback.isCorrect ? "回答正确" : feedback.skipped ? "已跳过" : "回答错误"
-    const mismatch =
-      feedback.firstMismatchTokenIndex >= 0
-        ? `<br />从第 ${feedback.firstMismatchTokenIndex + 1} 个词开始出现差异。`
-        : ""
-    const elapsed = feedback.elapsedMs != null ? `<br />用时：${esc(formatMs(feedback.elapsedMs))}` : ""
     const body = feedback.isCorrect
-      ? `标准答案：${feedback.expected}`
+      ? `标准答案：${feedback.expected}${feedback.chinese ? `；中文解释：${feedback.chinese}` : ""}`
       : feedback.skipped
-      ? `标准答案：${feedback.expected}`
-      : `你的答案：${feedback.input || " "}；标准答案：${feedback.expected}`
-    return `<div class="feedback ${className}"><p class="feedback-title">${esc(title)}</p><p class="feedback-body">${esc(body)}${mismatch}${elapsed}</p></div>`
+      ? `标准答案：${feedback.expected}${feedback.chinese ? `；中文解释：${feedback.chinese}` : ""}`
+      : `你的答案：${feedback.input || " "}；标准答案：${feedback.expected}${feedback.chinese ? `；中文解释：${feedback.chinese}` : ""}`
+    return `<div class="feedback ${className}"><p class="feedback-title">${esc(title)}</p><p class="feedback-body">${esc(body)}</p></div>`
   }
 
   function renderControls() {
@@ -559,13 +526,13 @@
             </select>
           </label>
           <label class="control-group">
-            <span class="control-label">题目范围</span>
+            <span class="control-label">范围</span>
             <select class="control-select" data-control="synonymReviewMode">
               <option value="all"${app.state.synonymReviewMode === "all" ? " selected" : ""}>全部题目</option>
               <option value="mistakes"${app.state.synonymReviewMode === "mistakes" ? " selected" : ""}>错题复习</option>
             </select>
           </label>
-          <p class="control-note">当前同义替换题库来自听力资料，支持选择题、输入题和混合模式。</p>
+          <p class="control-note">同义替换模块已经带中文解释，做题时、看反馈时和复习错题时都能看到。</p>
         </div>
       `
     }
@@ -577,10 +544,7 @@
           <span class="control-label">场景</span>
           <select class="control-select" data-control="scene">
             ${sceneOptions()
-              .map(
-                (scene) =>
-                  `<option value="${esc(scene.value)}"${scene.value === app.state.scene ? " selected" : ""}>${esc(scene.label)}</option>`,
-              )
+              .map((scene) => `<option value="${esc(scene.value)}"${scene.value === app.state.scene ? " selected" : ""}>${esc(scene.label)}</option>`)
               .join("")}
           </select>
         </label>
@@ -592,27 +556,23 @@
           </select>
         </label>
         <label class="control-group">
-          <span class="control-label">题目范围</span>
+          <span class="control-label">范围</span>
           <select class="control-select" data-control="reviewMode">
             <option value="all"${app.state.reviewMode === "all" ? " selected" : ""}>全部题目</option>
             <option value="mistakes"${app.state.reviewMode === "mistakes" ? " selected" : ""}>错题复习</option>
           </select>
         </label>
-        <p class="control-note">单词练习支持逐词闯关、小测模式、错题复习和“看答案后重输”。</p>
+        <p class="control-note">单词练习支持逐词闯关、小测模式、错题复习，以及“看答案后重新输入”。</p>
       </div>
     `
   }
 
   function renderWordPractice(list, current) {
-    if (!list.length) {
-      return `<div class="empty-state"><h3>当前没有可练习的单词</h3><p>请切换场景或改回全部题目。</p></div>`
-    }
+    if (!list.length) return `<div class="empty-state"><h3>当前没有可练习的单词</h3><p>请切换场景或范围。</p></div>`
     if (app.state.mode === "quiz" && app.state.roundComplete) {
-      return `<div class="practice-card"><div class="card-topline"><span class="chip">小测已完成</span><span class="chip">${esc(sceneDisplayLabel(app.state.scene))}</span></div><div><p class="practice-label">本轮结果</p><p class="practice-prompt">可以查看右侧统计，或开始下一轮。</p></div>${renderFeedback(app.state.feedback)}</div>`
+      return `<div class="practice-card"><div class="card-topline"><span class="chip">小测已完成</span><span class="chip">${esc(sceneDisplayLabel(app.state.scene))}</span></div><div><p class="practice-label">本轮结果</p><p class="practice-prompt">可以查看右侧总结，或开始下一轮。</p></div>${renderFeedback(app.state.feedback)}</div>`
     }
-    if (!current) {
-      return `<div class="empty-state"><h3>当前没有题目</h3><p>请调整筛选条件。</p></div>`
-    }
+    if (!current) return `<div class="empty-state"><h3>当前没有题目</h3><p>请调整筛选条件。</p></div>`
     const locked = Boolean(getActiveRevealState(current))
     const disabled = app.state.transitioning ? " disabled" : ""
     const revealDisabled = disabled || locked ? " disabled" : ""
@@ -623,7 +583,7 @@
     return `
       <form class="practice-card" data-practice-form>
         <div class="card-topline">
-          <span class="chip">${esc(modeDisplayLabel())}</span>
+          <span class="chip">${app.state.mode === "quiz" ? "小测模式" : "逐词练习"}</span>
           <span class="chip">${esc(sceneDisplayLabel(app.state.scene))}</span>
           <span class="chip">${esc(categoryDisplayLabel(current.category))}</span>
           <span class="chip">${esc(counter)}</span>
@@ -651,9 +611,7 @@
   }
 
   function renderSynonymPractice(list, current) {
-    if (!list.length) {
-      return `<div class="empty-state"><h3>当前没有可练习的同义替换</h3><p>请切换回全部题目，或等待错题积累。</p></div>`
-    }
+    if (!list.length) return `<div class="empty-state"><h3>当前没有可练习的同义替换</h3><p>请切换回全部题目，或先积累一些错题。</p></div>`
     const questionType = currentSynonymQuestionType()
     const disabled = app.state.transitioning ? " disabled" : ""
     const counter = `第 ${clampCursor(app.state.synonymDeckCursor, list.length) + 1} 题 / 共 ${list.length} 项`
@@ -661,18 +619,19 @@
     return `
       <form class="practice-card" data-practice-form>
         <div class="card-topline">
-          <span class="chip">${esc(moduleDisplayLabel("synonym"))}</span>
-          <span class="chip">${esc(questionType === "choice" ? "选择题" : "输入题")}</span>
+          <span class="chip">同义替换</span>
+          <span class="chip">${questionType === "choice" ? "选择题" : "输入题"}</span>
           <span class="chip">${esc(current.source)}</span>
           <span class="chip">${esc(counter)}</span>
         </div>
         <div>
           <p class="practice-label">原词 / 表达</p>
           <p class="practice-prompt">${esc(current.prompt)}</p>
+          ${current.chinese ? `<p class="practice-note">${esc(current.chinese)}</p>` : ""}
         </div>
         <div class="question-meta">
           <span>来源：${esc(current.source)}</span>
-          <span>模式：${esc(reviewModeDisplayLabel(app.state.synonymReviewMode))}</span>
+          <span>范围：${esc(reviewModeDisplayLabel(app.state.synonymReviewMode))}</span>
         </div>
         ${
           questionType === "choice"
@@ -702,11 +661,10 @@
   }
 
   function renderPractice() {
-    const list = currentList()
     const current = currentQuestion()
     return app.state.practiceModule === "synonym"
-      ? renderSynonymPractice(list, current)
-      : renderWordPractice(list, current)
+      ? renderSynonymPractice(currentSynonymList(), current)
+      : renderWordPractice(currentWordList(), current)
   }
 
   function renderStats() {
@@ -759,7 +717,7 @@
           ${
             items.length
               ? `<div><p class="result-label">最近错题</p><ul class="list">${items
-                  .map((item) => `<li>${esc(item.prompt)} → ${esc(item.answer)}</li>`)
+                  .map((item) => `<li>${esc(item.prompt)} → ${esc(item.answer)}${item.chinese ? `｜${esc(item.chinese)}` : ""}</li>`)
                   .join("")}</ul></div>`
               : `<div class="empty-state"><h3>还没有同义替换错题</h3><p>先做几题，系统会自动记录你还不熟的替换表达。</p></div>`
           }
@@ -803,7 +761,7 @@
     return `
       <div class="result-card">
         <div class="result-meta">
-          <span class="chip">${esc(modeDisplayLabel())}</span>
+          <span class="chip">${app.state.mode === "quiz" ? "小测模式" : "逐词练习"}</span>
           <span class="chip">${esc(reviewModeDisplayLabel(app.state.reviewMode))}</span>
           <span class="chip">${currentWordList().length} 项</span>
         </div>
@@ -853,18 +811,14 @@
     if (revealLocked && !canAdvanceFromSubmission({ revealState: revealLocked, isCorrect })) {
       app.state.feedback = {
         type: "retype",
-        message: input
-          ? `你刚刚看过答案了，当前输入“${input}”还不对，请继续重输正确答案。`
-          : "你刚刚看过答案了，请把正确答案重新输入一遍。",
+        message: input ? `你刚刚看过答案了，当前输入“${input}”还不对，请继续重输正确答案。` : "请把标准答案重新输入一遍。",
       }
       saveState()
       render()
       return
     }
 
-    if (revealLocked && isCorrect) {
-      app.state.revealState = null
-    }
+    if (revealLocked && isCorrect) app.state.revealState = null
 
     app.state.answered += 1
     if (isCorrect) {
@@ -891,41 +845,28 @@
     }
 
     if (app.state.mode === "quiz") {
-      app.state.quizRound.push({
-        itemId: current.id,
-        isCorrect,
-        skipped,
-        expected: current.english,
-        input,
-        elapsedMs,
-      })
+      app.state.quizRound.push({ itemId: current.id, isCorrect })
       app.state.deckCursor = clampCursor(app.state.deckCursor + 1, list.length)
       const isLast = app.state.roundIndex + 1 >= app.state.roundQuestions.length
       if (isLast) {
         const summary = summarizeQuizRound(app.state.quizRound)
         app.state.lastQuizSummary = summary
         app.state.roundComplete = true
-        app.state.transitioning = false
         app.state.roundIndex = 0
         app.state.quizRound = []
-        app.state.feedback = {
-          type: "summary",
-          message: `本轮答对 ${summary.correct} / ${summary.total} 题。`,
-        }
+        app.state.feedback = { type: "summary", message: `本轮答对 ${summary.correct} / ${summary.total} 题。` }
         saveState()
         render()
         return
       }
       app.state.transitioning = true
       app.state.roundIndex += 1
-      app.state.questionStartedAt = now
       advanceAfterFeedback()
       return
     }
 
     app.state.deckCursor = clampCursor(app.state.deckCursor + 1, list.length)
     app.state.transitioning = true
-    app.state.questionStartedAt = now
     advanceAfterFeedback()
   }
 
@@ -942,23 +883,18 @@
     if (revealLocked && !canAdvanceFromSubmission({ revealState: revealLocked, isCorrect })) {
       app.state.feedback = {
         type: "retype",
-        message: input ? `当前输入“${input}”还不对，请按标准答案继续重输。` : "请把刚才看到的标准答案重新输入一遍。",
+        message: input ? `当前输入“${input}”还不对，请继续重输正确答案。` : "请把标准答案重新输入一遍。",
       }
       saveState()
       render()
       return
     }
 
-    if (revealLocked && isCorrect) {
-      app.state.revealState = null
-    }
+    if (revealLocked && isCorrect) app.state.revealState = null
 
     app.state.synonymAnswered += 1
-    if (isCorrect) {
-      app.state.synonymCorrect += 1
-    } else {
-      app.state.synonymMistakes = addMistake(app.state.synonymMistakes, current.id)
-    }
+    if (isCorrect) app.state.synonymCorrect += 1
+    else app.state.synonymMistakes = addMistake(app.state.synonymMistakes, current.id)
     if (!skipped) {
       app.state.synonymTotalResponseMs += elapsedMs ?? 0
       app.state.synonymTimedAnswers += 1
@@ -970,22 +906,19 @@
       isCorrect,
       skipped,
       expected: current.answer,
+      chinese: current.chinese,
       input,
       firstMismatchTokenIndex: judged.firstMismatchTokenIndex,
       elapsedMs,
     }
     app.state.synonymDeckCursor = clampCursor(app.state.synonymDeckCursor + 1, list.length)
     app.state.transitioning = true
-    app.state.questionStartedAt = now
     advanceAfterFeedback()
   }
 
   function commitAttempt(current, input, skipped) {
-    if (app.state.practiceModule === "synonym") {
-      commitSynonymAttempt(current, input, skipped)
-      return
-    }
-    commitWordAttempt(current, input, skipped)
+    if (app.state.practiceModule === "synonym") commitSynonymAttempt(current, input, skipped)
+    else commitWordAttempt(current, input, skipped)
   }
 
   function revealCurrentAnswer() {
@@ -993,7 +926,6 @@
     if (!current || app.state.transitioning || app.state.roundComplete) return
     if (app.state.practiceModule === "synonym" && currentSynonymQuestionType() !== "input") return
 
-    clearTimer()
     if (app.state.practiceModule === "synonym") {
       app.state.synonymMistakes = addMistake(app.state.synonymMistakes, current.id)
     } else {
@@ -1003,12 +935,12 @@
     app.state.feedback = {
       type: "reveal",
       expected: app.state.revealState.answer,
+      chinese: current.chinese,
     }
     app.state.answerValue = ""
     app.state.questionStartedAt = Date.now()
     saveState()
     render()
-
     const answerInput = app.el.practice.querySelector?.("[data-answer-input]")
     if (answerInput?.focus) answerInput.focus()
   }
@@ -1059,7 +991,7 @@
     }
     if (action === "start-next-round") {
       event.preventDefault()
-      if (app.state.mode === "quiz") startWordQuiz(false)
+      startWordQuiz(false)
     }
     if (action === "choose-option") {
       event.preventDefault()
@@ -1077,30 +1009,20 @@
 
   function initialize() {
     if (app.ready || typeof document === "undefined") return
-    const hasSavedState = hasStoredState()
     const controls = document.querySelector('[data-mount="controls"]')
     const practice = document.querySelector('[data-mount="practice"]')
     const stats = document.querySelector('[data-mount="stats"]')
     const results = document.querySelector('[data-mount="results"]')
     if (!controls || !practice || !stats || !results) return
-
     app.el = { controls, practice, stats, results }
+    const hasSavedState = hasStoredState()
     app.state = loadState()
-    app.state.scene = sceneOptions().some((scene) => scene.value === app.state.scene) ? app.state.scene : "all"
-    app.state.questionStartedAt = Date.now()
+    app.state.scene = sceneOptions().some((item) => item.value === app.state.scene) ? app.state.scene : "all"
     bindEvents()
     app.ready = true
-
-    if (app.state.practiceModule === "synonym") {
-      startSynonym(false, hasSavedState)
-      return
-    }
-
-    if (app.state.mode === "quiz") {
-      startWordQuiz(false, hasSavedState)
-      return
-    }
-    startWordDrill(false, hasSavedState)
+    if (app.state.practiceModule === "synonym") startSynonym(false, hasSavedState)
+    else if (app.state.mode === "quiz") startWordQuiz(false, hasSavedState)
+    else startWordDrill(false, hasSavedState)
   }
 
   if (typeof document !== "undefined") {
@@ -1108,9 +1030,5 @@
     else initialize()
   }
 
-  root.IELTSVocabPracticeApp = {
-    initialize,
-    getState: () => app.state,
-    render,
-  }
+  root.IELTSVocabPracticeApp = { initialize, getState: () => app.state, render }
 })(typeof window !== "undefined" ? window : globalThis)
