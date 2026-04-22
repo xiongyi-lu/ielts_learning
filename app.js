@@ -159,8 +159,6 @@
       answered: 0,
       correct: 0,
       streak: 0,
-      totalResponseMs: 0,
-      timedAnswers: 0,
       mistakes: [],
       revealState: null,
       lastQuizSummary: null,
@@ -178,8 +176,6 @@
       deckCursor: 0,
       answered: 0,
       correct: 0,
-      totalResponseMs: 0,
-      timedAnswers: 0,
       mistakes: [],
     }
   }
@@ -202,7 +198,6 @@
       feedback: null,
       answerValue: "",
       transitioning: false,
-      questionStartedAt: 0,
     }
   }
 
@@ -243,8 +238,6 @@
     state.answered = toInt(state.answered, 0)
     state.correct = toInt(state.correct, 0)
     state.streak = toInt(state.streak, 0)
-    state.totalResponseMs = toInt(state.totalResponseMs, 0)
-    state.timedAnswers = toInt(state.timedAnswers, 0)
     state.mistakes = Array.isArray(state.mistakes) ? state.mistakes.filter(Boolean) : []
     state.revealState =
       state.revealState && typeof state.revealState === "object"
@@ -270,8 +263,6 @@
     state.deckCursor = toInt(state.deckCursor, 0)
     state.answered = toInt(state.answered, 0)
     state.correct = toInt(state.correct, 0)
-    state.totalResponseMs = toInt(state.totalResponseMs, 0)
-    state.timedAnswers = toInt(state.timedAnswers, 0)
     state.mistakes = Array.isArray(state.mistakes) ? state.mistakes.filter(Boolean) : []
     return state
   }
@@ -297,7 +288,6 @@
       feedback: null,
       answerValue: "",
       transitioning: false,
-      questionStartedAt: 0,
     }
   }
 
@@ -314,8 +304,6 @@
       answered: legacy.answered,
       correct: legacy.correct,
       streak: legacy.streak,
-      totalResponseMs: legacy.totalResponseMs,
-      timedAnswers: legacy.timedAnswers,
       mistakes: legacy.mistakes,
       revealState: legacy.revealState,
       lastQuizSummary: legacy.lastQuizSummary,
@@ -330,8 +318,6 @@
       deckCursor: legacy.synonymDeckCursor,
       answered: legacy.synonymAnswered,
       correct: legacy.synonymCorrect,
-      totalResponseMs: legacy.synonymTotalResponseMs,
-      timedAnswers: legacy.synonymTimedAnswers,
       mistakes: legacy.synonymMistakes,
     })
     return migrated
@@ -467,28 +453,10 @@
     return mode === "choice" ? "选择题" : mode === "input" ? "输入题" : "混合模式"
   }
 
-  function formatMs(value) {
-    return value <= 0 ? "0.0s" : `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}s`
-  }
-
-  function averageResponseMs(totalMs, count) {
-    if (!count) return 0
-    return Math.round(totalMs / count)
-  }
-
   function resetTransientState() {
     app.state.feedback = null
     app.state.answerValue = ""
     app.state.transitioning = false
-    app.state.questionStartedAt = 0
-  }
-
-  function setQuestionStartedNow() {
-    app.state.questionStartedAt = Date.now()
-  }
-
-  function getQuestionElapsedMs() {
-    return app.state.questionStartedAt ? Math.max(Date.now() - app.state.questionStartedAt, 0) : null
   }
 
   function activeRevealState(question) {
@@ -535,7 +503,6 @@
     const question = currentWordQuestion()
     if (!question || activeRevealState(question) == null) state.revealState = null
     saveState()
-    if (question) setQuestionStartedNow()
     render()
   }
 
@@ -545,7 +512,6 @@
     const list = currentSynonymList()
     state.deckCursor = !list.length || resetCursor ? 0 : clampCursor(state.deckCursor, list.length)
     saveState()
-    if (currentSynonymQuestion()) setQuestionStartedNow()
     render()
   }
 
@@ -597,7 +563,6 @@
     const state = activeWordState()
     const question = currentWordQuestion()
     if (!question) return
-    const elapsedMs = getQuestionElapsedMs()
     const verdict = judgeAnswer(question.english, app.state.answerValue)
     const revealState = activeRevealState(question)
     if (revealState?.needsRetype && !verdict.isCorrect) {
@@ -610,11 +575,6 @@
     }
 
     state.answered += 1
-    if (elapsedMs != null) {
-      state.totalResponseMs += elapsedMs
-      state.timedAnswers += 1
-    }
-
     if (verdict.isCorrect) {
       state.correct += 1
       state.streak += 1
@@ -628,7 +588,6 @@
       expected: question.english,
       input: app.state.answerValue,
       chinese: question.chinese,
-      elapsedMs,
       firstMismatchTokenIndex: verdict.firstMismatchTokenIndex,
     })
 
@@ -649,7 +608,6 @@
 
     app.state.answerValue = ""
     saveState()
-    if (currentWordQuestion()) setQuestionStartedNow()
     render()
   }
 
@@ -673,13 +631,8 @@
     const state = activeSynonymState()
     const question = currentSynonymQuestion()
     if (!question) return
-    const elapsedMs = getQuestionElapsedMs()
     const verdict = judgeAnswer(question.answer, app.state.answerValue)
     state.answered += 1
-    if (elapsedMs != null) {
-      state.totalResponseMs += elapsedMs
-      state.timedAnswers += 1
-    }
     if (verdict.isCorrect) {
       state.correct += 1
     } else {
@@ -690,7 +643,6 @@
       expected: question.answer,
       input: app.state.answerValue,
       chinese: question.chinese,
-      elapsedMs,
       firstMismatchTokenIndex: verdict.firstMismatchTokenIndex,
       prompt: question.prompt,
     })
@@ -698,7 +650,6 @@
     if (list.length) state.deckCursor = (clampCursor(state.deckCursor, list.length) + 1) % list.length
     app.state.answerValue = ""
     saveState()
-    if (currentSynonymQuestion()) setQuestionStartedNow()
     render()
   }
 
@@ -706,13 +657,8 @@
     const state = activeSynonymState()
     const question = currentSynonymQuestion()
     if (!question) return
-    const elapsedMs = getQuestionElapsedMs()
     const verdict = judgeAnswer(question.answer, value)
     state.answered += 1
-    if (elapsedMs != null) {
-      state.totalResponseMs += elapsedMs
-      state.timedAnswers += 1
-    }
     if (verdict.isCorrect) {
       state.correct += 1
     } else {
@@ -723,14 +669,12 @@
       expected: question.answer,
       input: value,
       chinese: question.chinese,
-      elapsedMs,
       firstMismatchTokenIndex: verdict.firstMismatchTokenIndex,
       prompt: question.prompt,
     })
     const list = currentSynonymList()
     if (list.length) state.deckCursor = (clampCursor(state.deckCursor, list.length) + 1) % list.length
     saveState()
-    if (currentSynonymQuestion()) setQuestionStartedNow()
     render()
   }
 
@@ -746,18 +690,20 @@
     const title = feedback.type === "correct" ? "回答正确" : "回答错误"
     const mismatch =
       feedback.firstMismatchTokenIndex >= 0 ? `；从第 ${feedback.firstMismatchTokenIndex + 1} 个词开始出现差异` : ""
-    const elapsed = feedback.elapsedMs != null ? `；用时：${formatMs(feedback.elapsedMs)}` : ""
     const prompt = feedback.prompt ? `原词：${feedback.prompt}；` : ""
-    return `<div class="feedback ${className}"><p class="feedback-title">${esc(title)}</p><p class="feedback-body">${esc(prompt)}标准答案：${esc(feedback.expected)}；中文解释：${esc(feedback.chinese)}${feedback.input ? `；你的答案：${esc(feedback.input)}` : ""}${esc(mismatch)}${esc(elapsed)}</p></div>`
+    return `<div class="feedback ${className}"><p class="feedback-title">${esc(title)}</p><p class="feedback-body">${esc(prompt)}标准答案：${esc(feedback.expected)}；中文解释：${esc(feedback.chinese)}${feedback.input ? `；你的答案：${esc(feedback.input)}` : ""}${esc(mismatch)}</p></div>`
   }
 
   function renderTabs() {
     const domainMeta = currentDomainMeta()
     return `
-      <div class="tab-row">
-        <button class="tab-button${app.state.domain === "listening" ? " tab-button-active" : ""}" type="button" data-action="set-domain" data-value="listening">听力模块</button>
-        <button class="tab-button${app.state.domain === "reading" ? " tab-button-active" : ""}" type="button" data-action="set-domain" data-value="reading">阅读模块</button>
-      </div>
+      <label class="control-group">
+        <span class="control-label">主模块</span>
+        <select class="control-select" data-control="domain">
+          <option value="listening"${app.state.domain === "listening" ? " selected" : ""}>听力模块</option>
+          <option value="reading"${app.state.domain === "reading" ? " selected" : ""}>阅读模块</option>
+        </select>
+      </label>
       <div class="tab-row">
         <button class="tab-button${app.state.practiceModule === "word" ? " tab-button-active" : ""}" type="button" data-action="set-module" data-value="word">${esc(domainMeta.wordLabel)}</button>
         <button class="tab-button${app.state.practiceModule === "synonym" ? " tab-button-active" : ""}" type="button" data-action="set-module" data-value="synonym">${esc(domainMeta.synonymLabel)}</button>
@@ -928,13 +874,11 @@
   function renderStats() {
     const state = app.state.practiceModule === "synonym" ? activeSynonymState() : activeWordState()
     const correctRate = state.answered ? Math.round((state.correct / state.answered) * 100) : 0
-    const average = averageResponseMs(state.totalResponseMs, state.timedAnswers)
     return `
       <div class="stat-grid">
         <div class="stat-card"><p class="stat-label">已答题数</p><p class="stat-value">${state.answered}</p></div>
         <div class="stat-card"><p class="stat-label">正确率</p><p class="stat-value">${correctRate}%</p></div>
         <div class="stat-card"><p class="stat-label">错题数</p><p class="stat-value">${state.mistakes.length}</p></div>
-        <div class="stat-card"><p class="stat-label">平均用时</p><p class="stat-value">${formatMs(average)}</p></div>
         ${
           app.state.practiceModule === "word"
             ? `<div class="stat-card"><p class="stat-label">当前连对</p><p class="stat-value">${activeWordState().streak}</p></div>`
@@ -1066,6 +1010,9 @@
     const target = event.target
     const control = target?.getAttribute?.("data-control")
     if (!control) return
+    if (control === "domain") {
+      return setDomain(target.value)
+    }
     if (control === "scene" || control === "mode" || control === "reviewMode") {
       return updateWordControl(control, target.value)
     }
