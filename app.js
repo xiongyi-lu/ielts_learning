@@ -204,6 +204,42 @@
     return answered % 2 === 0 ? "choice" : "input"
   }
 
+  function normalizeShortcutKey(key) {
+    const value = String(key ?? "")
+    if (!value) return ""
+    if (value === " ") return "Space"
+    if (value === "Esc") return "Escape"
+    if (value.length === 1) {
+      return /[a-z]/i.test(value) ? value.toUpperCase() : value
+    }
+    if (/^Arrow/.test(value)) return value
+    return value[0].toUpperCase() + value.slice(1)
+  }
+
+  function normalizeShortcutEvent(event) {
+    const parts = []
+    if (event?.ctrlKey) parts.push("Ctrl")
+    if (event?.altKey) parts.push("Alt")
+    if (event?.shiftKey) parts.push("Shift")
+    if (event?.metaKey) parts.push("Meta")
+    const key = normalizeShortcutKey(event?.key)
+    return key ? [...parts, key].join("+") : ""
+  }
+
+  function buildEffectiveShortcuts(defaults, overrides) {
+    return {
+      ...(defaults && typeof defaults === "object" ? defaults : {}),
+      ...(overrides && typeof overrides === "object" ? overrides : {}),
+    }
+  }
+
+  function findShortcutConflict(shortcuts, shortcut, ignoredAction) {
+    for (const [action, binding] of Object.entries(shortcuts || {})) {
+      if (action !== ignoredAction && binding === shortcut) return action
+    }
+    return null
+  }
+
   const coreApi = {
     normalizeAnswer,
     judgeAnswer,
@@ -215,6 +251,9 @@
     ensureProgressEntry,
     isDueToday,
     recordReviewOutcome,
+    normalizeShortcutEvent,
+    buildEffectiveShortcuts,
+    findShortcutConflict,
     summarizeQuizRound,
     createRevealState,
     canAdvanceFromSubmission,
@@ -229,7 +268,44 @@
 
   const STORAGE_KEY = "ielts-vocab-typing-site-v2"
   const LEGACY_STORAGE_KEY = "ielts-vocab-typing-site"
+  const SHORTCUT_STORAGE_KEY = "ielts-vocab-shortcuts-v1"
   const QUIZ_SIZE = 5
+
+  const DEFAULT_SHORTCUTS = {
+    submitAnswer: "Enter",
+    revealAnswer: "Shift+Enter",
+    clearInput: "Escape",
+    continueNext: "Ctrl+Enter",
+    chooseOption1: "1",
+    chooseOption2: "2",
+    chooseOption3: "3",
+    chooseOption4: "4",
+    switchListening: "Alt+1",
+    switchReading: "Alt+2",
+    switchWord: "Alt+W",
+    switchSynonym: "Alt+S",
+    switchAll: "Alt+A",
+    switchDue: "Alt+D",
+    switchMistakes: "Alt+M",
+  }
+
+  const SHORTCUT_ACTIONS = [
+    { id: "submitAnswer", label: "提交答案", scope: "input" },
+    { id: "revealAnswer", label: "看答案", scope: "input" },
+    { id: "clearInput", label: "清空输入", scope: "input" },
+    { id: "continueNext", label: "下一题 / 继续", scope: "input" },
+    { id: "chooseOption1", label: "选择第 1 项", scope: "choice" },
+    { id: "chooseOption2", label: "选择第 2 项", scope: "choice" },
+    { id: "chooseOption3", label: "选择第 3 项", scope: "choice" },
+    { id: "chooseOption4", label: "选择第 4 项", scope: "choice" },
+    { id: "switchListening", label: "切到听力模块", scope: "global" },
+    { id: "switchReading", label: "切到阅读模块", scope: "global" },
+    { id: "switchWord", label: "切到词汇", scope: "global" },
+    { id: "switchSynonym", label: "切到同义替换", scope: "global" },
+    { id: "switchAll", label: "切到普通练习", scope: "global" },
+    { id: "switchDue", label: "切到今日复习", scope: "global" },
+    { id: "switchMistakes", label: "切到错题专练", scope: "global" },
+  ]
 
   const DOMAIN_META = {
     listening: {
@@ -305,6 +381,13 @@
         listening: defaultDomainState(),
         reading: defaultDomainState(),
       },
+      shortcuts: {
+        overrides: {},
+        panelOpen: false,
+        captureAction: null,
+        captureError: "",
+        captureHint: "",
+      },
       feedback: null,
       answerValue: "",
       transitioning: false,
@@ -336,6 +419,17 @@
       incorrect: toInt(summary.incorrect, 0),
       wrongIds: Array.isArray(summary.wrongIds) ? summary.wrongIds.filter(Boolean) : [],
     }
+  }
+
+  function cleanShortcutOverrides(raw) {
+    const source = raw && typeof raw === "object" ? raw : {}
+    const output = {}
+    for (const [action, binding] of Object.entries(source)) {
+      if (!(action in DEFAULT_SHORTCUTS)) continue
+      if (!binding) continue
+      output[action] = String(binding)
+    }
+    return output
   }
 
   function cleanWordState(raw) {
@@ -399,6 +493,13 @@
           synonym: cleanSynonymState(domains.reading?.synonym),
         },
       },
+      shortcuts: {
+        overrides: cleanShortcutOverrides(value.shortcuts?.overrides),
+        panelOpen: Boolean(value.shortcutPanelOpen ?? value.shortcuts?.panelOpen),
+        captureAction: null,
+        captureError: "",
+        captureHint: "",
+      },
       feedback: null,
       answerValue: "",
       transitioning: false,
@@ -445,10 +546,22 @@
     try {
       if (typeof localStorage === "undefined") return defaultState()
       const currentRaw = localStorage.getItem(STORAGE_KEY)
-      if (currentRaw) return cleanState(JSON.parse(currentRaw))
+      const currentState = currentRaw ? cleanState(JSON.parse(currentRaw)) : null
+      const shortcutRaw = localStorage.getItem(SHORTCUT_STORAGE_KEY)
+      const shortcutOverrides = shortcutRaw ? cleanShortcutOverrides(JSON.parse(shortcutRaw)) : {}
+      if (currentState) {
+        currentState.shortcuts.overrides = shortcutOverrides
+        return currentState
+      }
       const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY)
-      if (!legacyRaw) return defaultState()
-      return cleanState(migrateLegacyState(JSON.parse(legacyRaw)))
+      if (!legacyRaw) {
+        const state = defaultState()
+        state.shortcuts.overrides = shortcutOverrides
+        return state
+      }
+      const migrated = cleanState(migrateLegacyState(JSON.parse(legacyRaw)))
+      migrated.shortcuts.overrides = shortcutOverrides
+      return migrated
     } catch {
       return defaultState()
     }
@@ -460,9 +573,11 @@
       const snapshot = {
         domain: app.state.domain,
         practiceModule: app.state.practiceModule,
+        shortcutPanelOpen: Boolean(app.state.shortcuts?.panelOpen),
         domains: app.state.domains,
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot))
+      localStorage.setItem(SHORTCUT_STORAGE_KEY, JSON.stringify(app.state.shortcuts.overrides))
     } catch {}
   }
 
@@ -548,6 +663,133 @@
   function currentSynonymQuestionType() {
     const state = activeSynonymState()
     return resolveSynonymQuestionType(state.mode, state.answered)
+  }
+
+  function effectiveShortcuts() {
+    return buildEffectiveShortcuts(DEFAULT_SHORTCUTS, app.state.shortcuts?.overrides)
+  }
+
+  function shortcutDefinition(actionId) {
+    return SHORTCUT_ACTIONS.find((item) => item.id === actionId) ?? null
+  }
+
+  function shortcutBinding(actionId) {
+    return effectiveShortcuts()[actionId] ?? ""
+  }
+
+  function isTypingTarget(target) {
+    const tagName = String(target?.tagName ?? "").toUpperCase()
+    return tagName === "INPUT" || tagName === "TEXTAREA"
+  }
+
+  function currentChoiceOptions() {
+    const question = currentSynonymQuestion()
+    if (!question || currentSynonymQuestionType() !== "choice") return []
+    return buildChoiceOptions(currentSynonymList(), question)
+  }
+
+  function shortcutCaptureState() {
+    return app.state.shortcuts ?? { overrides: {}, captureAction: null, captureError: "", captureHint: "" }
+  }
+
+  function setShortcutMessage(error, hint = "") {
+    const state = shortcutCaptureState()
+    state.captureError = error || ""
+    state.captureHint = hint || ""
+  }
+
+  function clearShortcutMessage() {
+    setShortcutMessage("", "")
+  }
+
+  function isShortcutCustomizationActive() {
+    return Object.keys(shortcutCaptureState().overrides || {}).length > 0
+  }
+
+  function isPlainTypingShortcut(shortcut) {
+    return /^[A-Z0-9]$/.test(shortcut)
+  }
+
+  function actionAllowsPlainShortcut(actionId) {
+    return actionId === "chooseOption1" || actionId === "chooseOption2" || actionId === "chooseOption3" || actionId === "chooseOption4"
+  }
+
+  function validateShortcutBinding(actionId, shortcut) {
+    if (!shortcut) return { ok: false, error: "没有识别到有效快捷键，请再试一次。" }
+    const conflict = findShortcutConflict(effectiveShortcuts(), shortcut, actionId)
+    if (conflict) {
+      return {
+        ok: false,
+        error: `这个快捷键已经绑定到“${shortcutDefinition(conflict)?.label ?? conflict}”，请先恢复原绑定或换一个。`,
+      }
+    }
+    if (isPlainTypingShortcut(shortcut) && !actionAllowsPlainShortcut(actionId)) {
+      return { ok: false, error: "普通字母和数字键更适合输入，不建议绑定为全局快捷键。" }
+    }
+    const hint = /^(Ctrl|Alt)\+/.test(shortcut) && shortcut !== DEFAULT_SHORTCUTS[actionId] ? "注意：这个组合键在某些浏览器环境下可能会与系统或浏览器快捷键冲突。" : ""
+    return { ok: true, hint }
+  }
+
+  function setShortcutOverride(actionId, shortcut) {
+    const state = shortcutCaptureState()
+    if (!actionId) return
+    if (shortcut === DEFAULT_SHORTCUTS[actionId]) delete state.overrides[actionId]
+    else state.overrides[actionId] = shortcut
+    saveState()
+  }
+
+  function startShortcutCapture(actionId) {
+    const state = shortcutCaptureState()
+    state.panelOpen = true
+    state.captureAction = actionId
+    clearShortcutMessage()
+    render()
+  }
+
+  function finishShortcutCapture(shortcut) {
+    const state = shortcutCaptureState()
+    const actionId = state.captureAction
+    if (!actionId) return false
+    const verdict = validateShortcutBinding(actionId, shortcut)
+    if (!verdict.ok) {
+      setShortcutMessage(verdict.error, "")
+      render()
+      return false
+    }
+    setShortcutOverride(actionId, shortcut)
+    state.captureAction = null
+    setShortcutMessage("", verdict.hint)
+    render()
+    return true
+  }
+
+  function resetShortcut(actionId) {
+    const state = shortcutCaptureState()
+    delete state.overrides[actionId]
+    state.captureAction = null
+    clearShortcutMessage()
+    saveState()
+    render()
+  }
+
+  function resetAllShortcuts() {
+    const state = shortcutCaptureState()
+    state.overrides = {}
+    state.captureAction = null
+    clearShortcutMessage()
+    saveState()
+    render()
+  }
+
+  function toggleShortcutPanel(forceOpen = null) {
+    const state = shortcutCaptureState()
+    state.panelOpen = typeof forceOpen === "boolean" ? forceOpen : !state.panelOpen
+    if (!state.panelOpen) {
+      state.captureAction = null
+      clearShortcutMessage()
+    }
+    saveState()
+    render()
   }
 
   function sceneOptions() {
@@ -857,6 +1099,102 @@
     `
   }
 
+  function currentShortcutHints() {
+    const hints = [`${shortcutBinding("submitAnswer")} 提交`]
+    if (app.state.practiceModule === "word") {
+      hints.push(`${shortcutBinding("revealAnswer")} 看答案`)
+    }
+    if (app.state.practiceModule === "synonym" && currentSynonymQuestionType() === "choice") {
+      hints.push(`1-4 选择`)
+    }
+    hints.push(`${shortcutBinding("switchListening")} / ${shortcutBinding("switchReading")} 切听力/阅读`)
+    hints.push(`${shortcutBinding("switchWord")} / ${shortcutBinding("switchSynonym")} 切词汇/同义替换`)
+    hints.push(`${shortcutBinding("switchAll")} / ${shortcutBinding("switchDue")} / ${shortcutBinding("switchMistakes")} 切练习来源`)
+    return hints
+  }
+
+  function renderShortcutHelp() {
+    const state = shortcutCaptureState()
+    const modeText = isShortcutCustomizationActive() ? "当前使用自定义快捷键" : "当前使用默认快捷键"
+    return `
+      <div class="shortcut-panel">
+        <div class="shortcut-panel-header">
+          <p class="shortcut-panel-title">快捷键提示</p>
+          <p class="shortcut-panel-meta">${esc(modeText)}</p>
+        </div>
+        <div class="shortcut-chip-row">
+          ${currentShortcutHints()
+            .map((hint) => `<span class="shortcut-chip">${esc(hint)}</span>`)
+            .join("")}
+        </div>
+        ${state.captureHint ? `<p class="shortcut-hint">${esc(state.captureHint)}</p>` : ""}
+      </div>
+    `
+  }
+
+  function renderShortcutSettings() {
+    const state = shortcutCaptureState()
+    return `
+      <div class="shortcut-panel">
+        <div class="shortcut-panel-header">
+          <div>
+            <p class="shortcut-panel-title">快捷键设置</p>
+            <p class="shortcut-panel-meta">默认情况下无需修改。若自定义，请注意避免与输入和浏览器快捷键冲突。</p>
+          </div>
+          <button class="button button-secondary" type="button" data-action="reset-all-shortcuts">恢复全部默认</button>
+        </div>
+        ${
+          state.captureAction
+            ? `<p class="shortcut-capture">正在录制：${esc(shortcutDefinition(state.captureAction)?.label ?? state.captureAction)}，请按下新的快捷键。</p>`
+            : ""
+        }
+        ${state.captureError ? `<p class="shortcut-error">${esc(state.captureError)}</p>` : ""}
+        <div class="shortcut-settings">
+          ${SHORTCUT_ACTIONS.map(
+            (item) => `
+              <div class="shortcut-row">
+                <div class="shortcut-row-main">
+                  <span class="shortcut-action">${esc(item.label)}</span>
+                  <code class="shortcut-binding">${esc(shortcutBinding(item.id))}</code>
+                </div>
+                <div class="shortcut-row-actions">
+                  <button class="button button-secondary" type="button" data-action="edit-shortcut" data-value="${esc(item.id)}">修改</button>
+                  <button class="button button-secondary" type="button" data-action="reset-shortcut" data-value="${esc(item.id)}">恢复默认</button>
+                </div>
+              </div>
+            `,
+          ).join("")}
+        </div>
+      </div>
+    `
+  }
+
+  function renderShortcutSection() {
+    const state = shortcutCaptureState()
+    const modeText = isShortcutCustomizationActive() ? "当前使用自定义快捷键" : "当前使用默认快捷键"
+    return `
+      <div class="shortcut-drawer">
+        <div class="shortcut-drawer-bar">
+          <div>
+            <p class="shortcut-drawer-title">快捷键</p>
+            <p class="shortcut-drawer-meta">${esc(modeText)}</p>
+          </div>
+          <button class="button button-secondary" type="button" data-action="toggle-shortcuts-panel">
+            ${state.panelOpen ? "收起" : "展开"}
+          </button>
+        </div>
+        ${
+          state.panelOpen
+            ? `<div class="shortcut-drawer-body">
+                ${renderShortcutHelp()}
+                ${renderShortcutSettings()}
+              </div>`
+            : ""
+        }
+      </div>
+    `
+  }
+
   function renderControls() {
     const wordState = activeWordState()
     const synonymState = activeSynonymState()
@@ -1103,6 +1441,59 @@
     `
   }
 
+  function renderResults() {
+    if (app.state.practiceModule === "word") {
+      const state = activeWordState()
+      const items = currentVocabData()
+      return `
+        <div class="summary-card">
+          <p class="result-label">最近一次小测</p>
+          ${
+            state.lastQuizSummary
+              ? `<div class="summary-stats">
+                  <div class="summary-stat"><p class="stat-label">总题数</p><p class="summary-value">${state.lastQuizSummary.total}</p></div>
+                  <div class="summary-stat"><p class="stat-label">答对</p><p class="summary-value">${state.lastQuizSummary.correct}</p></div>
+                  <div class="summary-stat"><p class="stat-label">答错</p><p class="summary-value">${state.lastQuizSummary.incorrect}</p></div>
+                </div>`
+              : `<p class="muted-copy">你还没有完成过当前模块的小测。</p>`
+          }
+        </div>
+        <div class="result-card">
+          <p class="result-label">错题回顾</p>
+          ${renderMistakeList(
+            items,
+            state.mistakes,
+            (item) =>
+              `${esc(item.english)} — ${esc(item.chinese)}${item.source ? ` <span class="muted-copy">（${esc(item.source)}）</span>` : ""}`,
+          )}
+        </div>
+        ${renderShortcutSection()}
+      `
+    }
+
+    const state = activeSynonymState()
+    const items = currentSynonymData()
+    return `
+      <div class="summary-card">
+        <p class="result-label">练习统计</p>
+        <div class="summary-stats">
+          <div class="summary-stat"><p class="stat-label">总作答</p><p class="summary-value">${state.answered}</p></div>
+          <div class="summary-stat"><p class="stat-label">答对</p><p class="summary-value">${state.correct}</p></div>
+          <div class="summary-stat"><p class="stat-label">错题</p><p class="summary-value">${state.mistakes.length}</p></div>
+        </div>
+      </div>
+      <div class="result-card">
+        <p class="result-label">错题回顾</p>
+        ${renderMistakeList(
+          items,
+          state.mistakes,
+          (item) => `${esc(item.prompt)} → ${esc(item.answer)} — ${esc(item.chinese)} <span class="muted-copy">（${esc(item.source)}）</span>`,
+        )}
+      </div>
+      ${renderShortcutSection()}
+    `
+  }
+
   function renderHeader() {
     const meta = currentDomainMeta()
     const eyebrow = meta.eyebrow
@@ -1156,6 +1547,10 @@
     if (action === "restart-word") return startWord(true)
     if (action === "restart-synonym") return startSynonym(true)
     if (action === "choose-synonym") return submitSynonymChoice(value)
+    if (action === "toggle-shortcuts-panel") return toggleShortcutPanel()
+    if (action === "edit-shortcut") return startShortcutCapture(value)
+    if (action === "reset-shortcut") return resetShortcut(value)
+    if (action === "reset-all-shortcuts") return resetAllShortcuts()
   }
 
   function onChange(event) {
@@ -1173,6 +1568,133 @@
     }
   }
 
+  function shortcutActionMap() {
+    return {
+      submitAnswer: "submit-answer",
+      revealAnswer: "reveal-answer",
+      clearInput: "clear-input",
+      continueNext: "continue-next",
+      chooseOption1: "choose-option-1",
+      chooseOption2: "choose-option-2",
+      chooseOption3: "choose-option-3",
+      chooseOption4: "choose-option-4",
+      switchListening: "switch-listening",
+      switchReading: "switch-reading",
+      switchWord: "switch-word",
+      switchSynonym: "switch-synonym",
+      switchAll: "switch-source-all",
+      switchDue: "switch-source-due",
+      switchMistakes: "switch-source-mistakes",
+    }
+  }
+
+  function resolveShortcutAction(shortcut) {
+    const shortcuts = effectiveShortcuts()
+    const actionEntries = Object.entries(shortcutActionMap())
+    for (const [bindingKey, action] of actionEntries) {
+      if (shortcuts[bindingKey] === shortcut) return action
+    }
+    return ""
+  }
+
+  function canContinueNext() {
+    if (app.state.practiceModule === "word") {
+      const state = activeWordState()
+      return state.mode === "quiz" ? state.roundComplete : Boolean(app.state.feedback)
+    }
+    return Boolean(app.state.feedback)
+  }
+
+  function continueNext() {
+    if (!canContinueNext()) return
+    if (app.state.practiceModule === "word") {
+      const state = activeWordState()
+      if (state.mode === "quiz" && state.roundComplete) return startWord(true)
+      return startWord(false)
+    }
+    return startSynonym(false)
+  }
+
+  function runShortcutAction(action) {
+    if (!action) return false
+    if (action === "submit-answer") {
+      if (app.state.practiceModule === "synonym" && currentSynonymQuestionType() === "choice") return false
+      if (app.state.practiceModule === "synonym") {
+        submitSynonymInput()
+      } else {
+        submitWordAnswer()
+      }
+      return true
+    }
+    if (action === "reveal-answer") {
+      if (app.state.practiceModule !== "word" || activeWordState().revealState) return false
+      revealWordAnswer()
+      return true
+    }
+    if (action === "clear-input") {
+      app.state.answerValue = ""
+      render()
+      return true
+    }
+    if (action === "continue-next") {
+      if (!canContinueNext()) return false
+      continueNext()
+      return true
+    }
+    if (action === "switch-listening") return Boolean(setDomain("listening") ?? true)
+    if (action === "switch-reading") return Boolean(setDomain("reading") ?? true)
+    if (action === "switch-word") return Boolean(setPracticeModule("word") ?? true)
+    if (action === "switch-synonym") return Boolean(setPracticeModule("synonym") ?? true)
+    if (action === "switch-source-all") {
+      if (app.state.practiceModule === "synonym") updateSynonymControl("synonymPracticeSource", "all")
+      else updateWordControl("practiceSource", "all")
+      return true
+    }
+    if (action === "switch-source-due") {
+      if (app.state.practiceModule === "synonym") updateSynonymControl("synonymPracticeSource", "due")
+      else updateWordControl("practiceSource", "due")
+      return true
+    }
+    if (action === "switch-source-mistakes") {
+      if (app.state.practiceModule === "synonym") updateSynonymControl("synonymPracticeSource", "mistakes")
+      else updateWordControl("practiceSource", "mistakes")
+      return true
+    }
+    if (action.startsWith("choose-option-")) {
+      if (app.state.practiceModule !== "synonym" || currentSynonymQuestionType() !== "choice") return false
+      const index = Number(action.slice(-1)) - 1
+      const choice = currentChoiceOptions()[index]
+      if (!choice) return false
+      submitSynonymChoice(choice)
+      return true
+    }
+    return false
+  }
+
+  function onKeyDown(event) {
+    const shortcut = normalizeShortcutEvent(event)
+    if (!shortcut) return
+    if (shortcutCaptureState().captureAction) {
+      event.preventDefault?.()
+      finishShortcutCapture(shortcut)
+      return
+    }
+    const action = resolveShortcutAction(shortcut)
+    if (!action) return
+    const typing = isTypingTarget(event.target)
+    const allowInTypingContext =
+      action === "submit-answer" ||
+      action === "reveal-answer" ||
+      action === "clear-input" ||
+      action === "continue-next" ||
+      action.startsWith("choose-option-")
+    if (typing && !allowInTypingContext) return
+    if (typing && action.startsWith("choose-option-")) return
+    if (runShortcutAction(action)) {
+      event.preventDefault?.()
+    }
+  }
+
   function mount() {
     app.el = {
       controls: document.querySelector('[data-mount="controls"]'),
@@ -1186,6 +1708,8 @@
     app.el.practice.addEventListener("input", onInput)
     app.el.practice.addEventListener("submit", onSubmit)
     app.el.practice.addEventListener("click", onClick)
+    app.el.results.addEventListener("click", onClick)
+    document.addEventListener("keydown", onKeyDown)
     app.state = loadState()
     app.ready = true
     restartActive(false)
