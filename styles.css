@@ -416,6 +416,12 @@ section > h2 {
   line-height: 1.6;
 }
 
+.feedback-meta {
+  margin: 10px 0 0;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

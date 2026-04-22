@@ -37,6 +37,106 @@
     return [...existing, itemId]
   }
 
+  function todayIso() {
+    const date = new Date()
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, "0")
+    const day = String(date.getDate()).padStart(2, "0")
+    return `${year}-${month}-${day}`
+  }
+
+  function addDays(isoDate, days) {
+    const [year, month, day] = String(isoDate || todayIso())
+      .split("-")
+      .map((part) => Number(part))
+    const date = new Date(year, (month || 1) - 1, day || 1)
+    date.setDate(date.getDate() + Number(days || 0))
+    const nextYear = date.getFullYear()
+    const nextMonth = String(date.getMonth() + 1).padStart(2, "0")
+    const nextDay = String(date.getDate()).padStart(2, "0")
+    return `${nextYear}-${nextMonth}-${nextDay}`
+  }
+
+  function defaultProgressEntry() {
+    return {
+      status: "new",
+      streak: 0,
+      lastAnsweredOn: "",
+      nextReviewOn: "",
+      wrongCount: 0,
+      seenCount: 0,
+    }
+  }
+
+  function ensureProgressEntry(progressMap, itemId) {
+    if (!progressMap || typeof progressMap !== "object" || !itemId) return defaultProgressEntry()
+    if (!progressMap[itemId]) {
+      progressMap[itemId] = defaultProgressEntry()
+    }
+    return progressMap[itemId]
+  }
+
+  function isDueToday(progressEntry, today = todayIso()) {
+    return Boolean(progressEntry?.nextReviewOn) && progressEntry.nextReviewOn <= today
+  }
+
+  function nextReviewDate(status, streak, today = todayIso()) {
+    if (status === "learning") {
+      return streak >= 2 ? addDays(today, 1) : today
+    }
+    if (streak <= 3) return addDays(today, 1)
+    if (streak === 4) return addDays(today, 3)
+    return addDays(today, 7)
+  }
+
+  function recordReviewOutcome(progressMap, itemId, { correct, today = todayIso() } = {}) {
+    const entry = ensureProgressEntry(progressMap, itemId)
+    entry.seenCount += 1
+    entry.lastAnsweredOn = today
+    if (!correct) {
+      entry.status = "learning"
+      entry.streak = 0
+      entry.wrongCount += 1
+      entry.nextReviewOn = today
+      return entry
+    }
+    entry.streak += 1
+    entry.status = entry.streak >= 3 ? "review" : "learning"
+    entry.nextReviewOn = nextReviewDate(entry.status, entry.streak, today)
+    return entry
+  }
+
+  function cleanProgressMap(raw) {
+    const source = raw && typeof raw === "object" ? raw : {}
+    const output = {}
+    for (const [itemId, value] of Object.entries(source)) {
+      if (!itemId) continue
+      const entry = value && typeof value === "object" ? value : {}
+      output[itemId] = {
+        status: entry.status === "learning" || entry.status === "review" ? entry.status : "new",
+        streak: Math.max(0, Number(entry.streak) || 0),
+        lastAnsweredOn: String(entry.lastAnsweredOn ?? ""),
+        nextReviewOn: String(entry.nextReviewOn ?? ""),
+        wrongCount: Math.max(0, Number(entry.wrongCount) || 0),
+        seenCount: Math.max(0, Number(entry.seenCount) || 0),
+      }
+    }
+    return output
+  }
+
+  function filterByPracticeSource(items, moduleState, today = todayIso()) {
+    const safeItems = Array.isArray(items) ? items : []
+    const practiceSource = moduleState?.practiceSource ?? "all"
+    if (practiceSource === "mistakes") {
+      const ids = new Set(Array.isArray(moduleState?.mistakes) ? moduleState.mistakes : [])
+      return safeItems.filter((item) => ids.has(item.id))
+    }
+    if (practiceSource === "due") {
+      return safeItems.filter((item) => isDueToday(moduleState?.progress?.[item.id], today))
+    }
+    return safeItems
+  }
+
   function filterVocabulary(vocabulary, options = {}) {
     const scene = options.scene ?? "all"
     const reviewMode = options.reviewMode ?? "all"
@@ -109,6 +209,12 @@
     judgeAnswer,
     filterVocabulary,
     addMistake,
+    todayIso,
+    addDays,
+    defaultProgressEntry,
+    ensureProgressEntry,
+    isDueToday,
+    recordReviewOutcome,
     summarizeQuizRound,
     createRevealState,
     canAdvanceFromSubmission,
@@ -155,11 +261,13 @@
       scene: "all",
       mode: "drill",
       reviewMode: "all",
+      practiceSource: "all",
       deckCursor: 0,
       answered: 0,
       correct: 0,
       streak: 0,
       mistakes: [],
+      progress: {},
       revealState: null,
       lastQuizSummary: null,
       roundQuestions: [],
@@ -173,10 +281,12 @@
     return {
       mode: "mixed",
       reviewMode: "all",
+      practiceSource: "all",
       deckCursor: 0,
       answered: 0,
       correct: 0,
       mistakes: [],
+      progress: {},
     }
   }
 
@@ -234,11 +344,13 @@
     state.scene = String(state.scene ?? "all")
     state.mode = state.mode === "quiz" ? "quiz" : "drill"
     state.reviewMode = state.reviewMode === "mistakes" ? "mistakes" : "all"
+    state.practiceSource = ["all", "due", "mistakes"].includes(state.practiceSource) ? state.practiceSource : "all"
     state.deckCursor = toInt(state.deckCursor, 0)
     state.answered = toInt(state.answered, 0)
     state.correct = toInt(state.correct, 0)
     state.streak = toInt(state.streak, 0)
     state.mistakes = Array.isArray(state.mistakes) ? state.mistakes.filter(Boolean) : []
+    state.progress = cleanProgressMap(state.progress)
     state.revealState =
       state.revealState && typeof state.revealState === "object"
         ? {
@@ -260,10 +372,12 @@
     const state = { ...defaults, ...(raw && typeof raw === "object" ? raw : {}) }
     state.mode = state.mode === "choice" || state.mode === "input" ? state.mode : "mixed"
     state.reviewMode = state.reviewMode === "mistakes" ? "mistakes" : "all"
+    state.practiceSource = ["all", "due", "mistakes"].includes(state.practiceSource) ? state.practiceSource : "all"
     state.deckCursor = toInt(state.deckCursor, 0)
     state.answered = toInt(state.answered, 0)
     state.correct = toInt(state.correct, 0)
     state.mistakes = Array.isArray(state.mistakes) ? state.mistakes.filter(Boolean) : []
+    state.progress = cleanProgressMap(state.progress)
     return state
   }
 
@@ -300,11 +414,13 @@
       scene: legacy.scene,
       mode: legacy.mode,
       reviewMode: legacy.reviewMode,
+      practiceSource: "all",
       deckCursor: legacy.deckCursor,
       answered: legacy.answered,
       correct: legacy.correct,
       streak: legacy.streak,
       mistakes: legacy.mistakes,
+      progress: legacy.progress,
       revealState: legacy.revealState,
       lastQuizSummary: legacy.lastQuizSummary,
       roundQuestions: legacy.roundQuestions,
@@ -315,10 +431,12 @@
     migrated.domains.listening.synonym = cleanSynonymState({
       mode: legacy.synonymMode,
       reviewMode: legacy.synonymReviewMode,
+      practiceSource: "all",
       deckCursor: legacy.synonymDeckCursor,
       answered: legacy.synonymAnswered,
       correct: legacy.synonymCorrect,
       mistakes: legacy.synonymMistakes,
+      progress: legacy.synonymProgress,
     })
     return migrated
   }
@@ -386,17 +504,19 @@
 
   function currentWordList() {
     const state = activeWordState()
-    return filterVocabulary(currentVocabData(), {
+    const filtered = filterVocabulary(currentVocabData(), {
       scene: state.scene,
       reviewMode: state.reviewMode,
       mistakes: state.mistakes,
     })
+    return filterByPracticeSource(filtered, state)
   }
 
   function currentSynonymList() {
     const state = activeSynonymState()
     const mistakeSet = new Set(state.mistakes)
-    return currentSynonymData().filter((item) => state.reviewMode !== "mistakes" || mistakeSet.has(item.id))
+    const filtered = currentSynonymData().filter((item) => state.reviewMode !== "mistakes" || mistakeSet.has(item.id))
+    return filterByPracticeSource(filtered, state)
   }
 
   function clampCursor(cursor, size) {
@@ -447,6 +567,10 @@
 
   function reviewModeLabel(mode) {
     return mode === "mistakes" ? "错题复习" : "全部题目"
+  }
+
+  function practiceSourceLabel(mode) {
+    return mode === "due" ? "今日复习" : mode === "mistakes" ? "错题专练" : "普通练习"
   }
 
   function synonymModeLabel(mode) {
@@ -540,6 +664,7 @@
     if (field === "scene") state.scene = value
     if (field === "mode") state.mode = value === "quiz" ? "quiz" : "drill"
     if (field === "reviewMode") state.reviewMode = value === "mistakes" ? "mistakes" : "all"
+    if (field === "practiceSource") state.practiceSource = ["all", "due", "mistakes"].includes(value) ? value : "all"
     state.revealState = null
     startWord(true)
   }
@@ -552,11 +677,25 @@
     if (field === "synonymReviewMode") {
       state.reviewMode = value === "mistakes" ? "mistakes" : "all"
     }
+    if (field === "synonymPracticeSource") {
+      state.practiceSource = ["all", "due", "mistakes"].includes(value) ? value : "all"
+    }
     startSynonym(true)
   }
 
   function setFeedback(feedback) {
     app.state.feedback = feedback
+  }
+
+  function describeReviewUpdate(entry) {
+    return entry?.status === "learning" && entry?.nextReviewOn === todayIso() ? "已加入今日复习" : "已延后下次复习"
+  }
+
+  function applyReviewOutcome(moduleState, itemId, correct) {
+    const effectiveCorrect = Boolean(correct) && !moduleState.revealState?.needsRetype
+    return recordReviewOutcome(moduleState.progress, itemId, {
+      correct: effectiveCorrect,
+    })
   }
 
   function submitWordAnswer() {
@@ -582,6 +721,7 @@
       state.streak = 0
       state.mistakes = addMistake(state.mistakes, question.id)
     }
+    const reviewEntry = applyReviewOutcome(state, question.id, verdict.isCorrect)
 
     setFeedback({
       type: verdict.isCorrect ? "correct" : "incorrect",
@@ -589,6 +729,7 @@
       input: app.state.answerValue,
       chinese: question.chinese,
       firstMismatchTokenIndex: verdict.firstMismatchTokenIndex,
+      reviewMessage: describeReviewUpdate(reviewEntry),
     })
 
     if (state.mode === "quiz") {
@@ -622,6 +763,7 @@
       type: "reveal",
       expected: question.english,
       chinese: question.chinese,
+      reviewMessage: "这题会回到学习队列，稍后还会再次出现。",
     })
     saveState()
     render()
@@ -638,6 +780,7 @@
     } else {
       state.mistakes = addMistake(state.mistakes, question.id)
     }
+    const reviewEntry = applyReviewOutcome(state, question.id, verdict.isCorrect)
     setFeedback({
       type: verdict.isCorrect ? "correct" : "incorrect",
       expected: question.answer,
@@ -645,6 +788,7 @@
       chinese: question.chinese,
       firstMismatchTokenIndex: verdict.firstMismatchTokenIndex,
       prompt: question.prompt,
+      reviewMessage: describeReviewUpdate(reviewEntry),
     })
     const list = currentSynonymList()
     if (list.length) state.deckCursor = (clampCursor(state.deckCursor, list.length) + 1) % list.length
@@ -664,6 +808,7 @@
     } else {
       state.mistakes = addMistake(state.mistakes, question.id)
     }
+    const reviewEntry = applyReviewOutcome(state, question.id, verdict.isCorrect)
     setFeedback({
       type: verdict.isCorrect ? "correct" : "incorrect",
       expected: question.answer,
@@ -671,6 +816,7 @@
       chinese: question.chinese,
       firstMismatchTokenIndex: verdict.firstMismatchTokenIndex,
       prompt: question.prompt,
+      reviewMessage: describeReviewUpdate(reviewEntry),
     })
     const list = currentSynonymList()
     if (list.length) state.deckCursor = (clampCursor(state.deckCursor, list.length) + 1) % list.length
@@ -681,7 +827,7 @@
   function renderFeedback(feedback) {
     if (!feedback) return ""
     if (feedback.type === "reveal") {
-      return `<div class="feedback warning"><p class="feedback-title">已显示答案</p><p class="feedback-body">标准答案：${esc(feedback.expected)}；中文提示：${esc(feedback.chinese)}。现在需要你自己重新正确输入一遍，才能进入下一题。</p></div>`
+      return `<div class="feedback warning"><p class="feedback-title">已显示答案</p><p class="feedback-body">标准答案：${esc(feedback.expected)}；中文提示：${esc(feedback.chinese)}。现在需要你自己重新正确输入一遍，才能进入下一题。</p>${feedback.reviewMessage ? `<p class="feedback-meta">${esc(feedback.reviewMessage)}</p>` : ""}</div>`
     }
     if (feedback.type === "retype") {
       return `<div class="feedback warning"><p class="feedback-title">需要重输</p><p class="feedback-body">${esc(feedback.message)}</p></div>`
@@ -691,7 +837,7 @@
     const mismatch =
       feedback.firstMismatchTokenIndex >= 0 ? `；从第 ${feedback.firstMismatchTokenIndex + 1} 个词开始出现差异` : ""
     const prompt = feedback.prompt ? `原词：${feedback.prompt}；` : ""
-    return `<div class="feedback ${className}"><p class="feedback-title">${esc(title)}</p><p class="feedback-body">${esc(prompt)}标准答案：${esc(feedback.expected)}；中文解释：${esc(feedback.chinese)}${feedback.input ? `；你的答案：${esc(feedback.input)}` : ""}${esc(mismatch)}</p></div>`
+    return `<div class="feedback ${className}"><p class="feedback-title">${esc(title)}</p><p class="feedback-body">${esc(prompt)}标准答案：${esc(feedback.expected)}；中文解释：${esc(feedback.chinese)}${feedback.input ? `；你的答案：${esc(feedback.input)}` : ""}${esc(mismatch)}</p>${feedback.reviewMessage ? `<p class="feedback-meta">${esc(feedback.reviewMessage)}</p>` : ""}</div>`
   }
 
   function renderTabs() {
@@ -729,10 +875,11 @@
             </select>
           </label>
           <label class="control-group">
-            <span class="control-label">范围</span>
-            <select class="control-select" data-control="synonymReviewMode">
-              <option value="all"${synonymState.reviewMode === "all" ? " selected" : ""}>全部题目</option>
-              <option value="mistakes"${synonymState.reviewMode === "mistakes" ? " selected" : ""}>错题复习</option>
+            <span class="control-label">练习来源</span>
+            <select class="control-select" data-control="synonymPracticeSource">
+              <option value="all"${synonymState.practiceSource === "all" ? " selected" : ""}>普通练习</option>
+              <option value="due"${synonymState.practiceSource === "due" ? " selected" : ""}>今日复习</option>
+              <option value="mistakes"${synonymState.practiceSource === "mistakes" ? " selected" : ""}>错题专练</option>
             </select>
           </label>
           <div class="control-note muted-copy">${esc(domainMeta.synonymNote)}</div>
@@ -761,10 +908,11 @@
           </select>
         </label>
         <label class="control-group">
-          <span class="control-label">范围</span>
-          <select class="control-select" data-control="reviewMode">
-            <option value="all"${wordState.reviewMode === "all" ? " selected" : ""}>全部题目</option>
-            <option value="mistakes"${wordState.reviewMode === "mistakes" ? " selected" : ""}>错题复习</option>
+          <span class="control-label">练习来源</span>
+          <select class="control-select" data-control="practiceSource">
+            <option value="all"${wordState.practiceSource === "all" ? " selected" : ""}>普通练习</option>
+            <option value="due"${wordState.practiceSource === "due" ? " selected" : ""}>今日复习</option>
+            <option value="mistakes"${wordState.practiceSource === "mistakes" ? " selected" : ""}>错题专练</option>
           </select>
         </label>
         <div class="control-note muted-copy">
@@ -874,17 +1022,21 @@
   function renderStats() {
     const state = app.state.practiceModule === "synonym" ? activeSynonymState() : activeWordState()
     const correctRate = state.answered ? Math.round((state.correct / state.answered) * 100) : 0
+    const items = app.state.practiceModule === "synonym" ? currentSynonymData() : currentVocabData()
+    const dueCount = items.filter((item) => isDueToday(state.progress?.[item.id])).length
     return `
       <div class="stat-grid">
         <div class="stat-card"><p class="stat-label">已答题数</p><p class="stat-value">${state.answered}</p></div>
         <div class="stat-card"><p class="stat-label">正确率</p><p class="stat-value">${correctRate}%</p></div>
         <div class="stat-card"><p class="stat-label">错题数</p><p class="stat-value">${state.mistakes.length}</p></div>
+        <div class="stat-card"><p class="stat-label">待复习</p><p class="stat-value">${dueCount}</p></div>
         ${
           app.state.practiceModule === "word"
             ? `<div class="stat-card"><p class="stat-label">当前连对</p><p class="stat-value">${activeWordState().streak}</p></div>`
             : `<div class="stat-card"><p class="stat-label">当前题型</p><p class="stat-value">${esc(synonymModeLabel(activeSynonymState().mode))}</p></div>`
         }
         <div class="stat-card"><p class="stat-label">当前模块</p><p class="stat-value">${esc(app.state.practiceModule === "word" ? currentDomainMeta().wordLabel : currentDomainMeta().synonymLabel)}</p></div>
+        <div class="stat-card"><p class="stat-label">练习来源</p><p class="stat-value">${esc(practiceSourceLabel(state.practiceSource))}</p></div>
       </div>
     `
   }
@@ -1013,10 +1165,10 @@
     if (control === "domain") {
       return setDomain(target.value)
     }
-    if (control === "scene" || control === "mode" || control === "reviewMode") {
+    if (control === "scene" || control === "mode" || control === "reviewMode" || control === "practiceSource") {
       return updateWordControl(control, target.value)
     }
-    if (control === "synonymMode" || control === "synonymReviewMode") {
+    if (control === "synonymMode" || control === "synonymReviewMode" || control === "synonymPracticeSource") {
       return updateSynonymControl(control, target.value)
     }
   }
